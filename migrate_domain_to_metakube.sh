@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 POSITIONAL=()
-HELP="Usage: $0 [-h] [kubeconfig]
+HELP="Usage: ${0} [-h] [kubeconfig]
   Migrate MetaKube cluster to new domain.  If not asked to, you don't need to
   use this script.
 
@@ -11,27 +11,27 @@ Positional:
   kubeconfig: Path to kubeconfig for the cluster you want to migrate."
 
 while [[ $# -gt 0 ]]; do
-  key="$1"
-  case $key in
+  key="${1}"
+  case ${key} in
     -h|--help)
       printf '%s\n' "${HELP}"
       exit 0
       ;;
     -*)
-      printf 'Unknown paramter: %s\n%s\n' "$1" "$HELP"
+      printf 'Unknown paramter: %s\n%s\n' "${1}" "${HELP}"
       exit 1
       ;;
     *)
-      POSITIONAL+=("$1")
+      POSITIONAL+=("${1}")
       shift
       ;;
   esac
 done
 set -- "${POSITIONAL[@]}"
 
-if [ -n "$1" ]; then
-  printf 'Using kubeconfig %s\n' "$1"
-  export KUBECONFIG=$1
+if [ -n "${1}" ]; then
+  printf 'Using kubeconfig %s\n' "${1}"
+  export KUBECONFIG="${1}"
 fi
 
 printf 'Will update cluster %s. Press <Ctrl+C> to abort! Waiting 5 seconds...\n' "$(kubectl config view -o jsonpath='{.current-context}')"
