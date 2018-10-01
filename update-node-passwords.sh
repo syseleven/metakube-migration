@@ -4,7 +4,13 @@ HELP="Usage: $0 [-h]
   Update password for each Node in a MetaKube Cluster.
 
 Parameters:
-  -h|--help: Print this help text."
+  -h|--help : Print this help text.
+  -i|--identity identity_file : Select identity file for SSH connections.
+  -u|--user user : Select username for SSH connections."
+
+ssh='ssh'
+# TODO For now we default to Ubuntu nodes
+user='ubuntu'
 
 while [[ $# -gt 0 ]]; do
   key="${1}"
@@ -13,11 +19,24 @@ while [[ $# -gt 0 ]]; do
       printf '%s\n' "${HELP}"
       exit 0
       ;;
+    -i|--identity)
+      if [[ ! -f "${2}" ]]; then
+        echo "Identity File '${2}' is not a file"
+        exit 1
+      fi
+      ssh+=" -i ${2}"
+      shift
+      ;;
+    -u|--user)
+      user="$2"
+      shift
+      ;;
     *)
       printf 'Unknown paramter: %s\n%s\n' "${1}" "${HELP}"
       exit 1
       ;;
   esac
+  shift
 done
 
 printf 'Will update cluster %s. Press <Ctrl+C> to abort or enter new password: ' "$(kubectl config view -o jsonpath='{.current-context}')"
@@ -66,13 +85,11 @@ for node_ip in ${node_ips[@]}; do
   ip="$(cut -d';' -f2 <<< "${node_ip}")"
 
   echo "Updating node ${node} (${ip})"
-  # TODO For now we limit ourselfs to ubuntu nodes
-  user=ubuntu
 
-  ssh ${user}@${ip} "sudo sed -i 's/^password = .*$/password = \"${password}\"/g' /etc/kubernetes/cloud-config 2>/dev/null"
-  ssh ${user}@${ip} "sudo systemctl restart kubelet 2>/dev/null"
+  ${ssh} ${user}@${ip} "sudo sed -i 's/^password = .*$/password = \"${password}\"/g' /etc/kubernetes/cloud-config 2>/dev/null"
+  ${ssh} ${user}@${ip} "sudo systemctl restart kubelet 2>/dev/null"
   SECONDS=0; TIMEOUT=60
-  until ssh ${user}@${ip} sudo systemctl is-active --quiet kubelet 2>/dev/null; do
+  until ${ssh} ${user}@${ip} sudo systemctl is-active --quiet kubelet 2>/dev/null; do
     if [ ${SECONDS} -ge ${TIMEOUT} ]; then
       echo "Node ${node} not ready after ${TIMEOUT} seconds. Check Node and run script again. Aborting!"
       exit 1
