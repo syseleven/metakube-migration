@@ -27,8 +27,13 @@ if [ -z "${password}" ]; then
   echo "Empty password. Aborting!"
   exit 1
 fi
-# double escape " and \ characters, single escape /
-password="$(echo "${password}" |sed 's/\\/\\\\\\/g' |sed 's/"/\\\\"/g' |sed 's#/#\\/#g')"
+# escape " and \ characters; then safe escape whole string; then replace ' with
+# \x27 (to safely pass through)
+password="$(printf "%q" "$(echo ${password} \
+    |sed 's/\\/\\\\/g' \
+    |sed 's/"/\\"/g')" \
+  |sed "s/'/\\x27/g"
+)"
 
 # Get node IPs. Only start updating if all IPs could be gathered successfully.
 # Try kubelet and fall back to openstack in case of https://github.com/kubernetes/kubernetes/issues/68270
