@@ -6,9 +6,10 @@ HELP="Usage: $0 [-h]
 Parameters:
   -h|--help : Print this help text.
   -i|--identity identity_file : Select identity file for SSH connections.
+  -k|--no-verify-hostkey : Skip SSH hostkey check.
   -u|--user user : Select username for SSH connections."
 
-ssh='ssh'
+ssh_args=('-q')
 # TODO For now we default to Ubuntu nodes
 user='ubuntu'
 
@@ -24,7 +25,11 @@ while [[ $# -gt 0 ]]; do
         echo "Identity File '${2}' is not a file"
         exit 1
       fi
-      ssh+=" -i ${2}"
+      ssh_args+=('-i' "${2}")
+      shift
+      ;;
+    -k|--no-verify-hostkey)
+      ssh_args+=('-o' 'StrictHostKeyChecking=no' '-o' 'VerifyHostKeyDNS=no' '-o' 'UserKnownHostsFile=/dev/null')
       shift
       ;;
     -u|--user)
@@ -86,10 +91,10 @@ for node_ip in ${node_ips[@]}; do
 
   echo "Updating node ${node} (${ip})"
 
-  ${ssh} ${user}@${ip} "sudo sed -i 's/^password = .*$/password = \"${password}\"/g' /etc/kubernetes/cloud-config 2>/dev/null"
-  ${ssh} ${user}@${ip} "sudo systemctl restart kubelet 2>/dev/null"
+  ssh ${ssh_args[@]} ${user}@${ip} "sudo sed -i 's/^\\(password *\\) = .*$/\\1 = \"${password}\"/g' /etc/kubernetes/cloud-config 2>/dev/null"
+  ssh ${ssh_args[@]} ${user}@${ip} "sudo systemctl restart kubelet 2>/dev/null"
   SECONDS=0; TIMEOUT=60
-  until ${ssh} ${user}@${ip} sudo systemctl is-active --quiet kubelet 2>/dev/null; do
+  until ssh ${ssh_args[@]} ${user}@${ip} "sudo systemctl is-active --quiet kubelet 2>/dev/null"; do
     if [ ${SECONDS} -ge ${TIMEOUT} ]; then
       echo "Node ${node} not ready after ${TIMEOUT} seconds. Check Node and run script again. Aborting!"
       exit 1
