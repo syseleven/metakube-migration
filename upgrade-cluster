@@ -1,0 +1,223 @@
+#!/usr/bin/env bash
+
+cluster="$(kubectl -n kube-system get machines -o name | cut -d- -f3 | head -n1)"
+version="$(kubectl version -o json | jq -rc '.serverVersion.gitVersion')"
+verbose=1
+upgrade_type='inplace'
+force_operating_system=''
+force_image=''
+force='no'
+
+HELP="Usage: $0 [-ivh] [--os operating_system] [--image image]
+  Update all nodes of the active MetaKube cluster.
+
+Parameters:
+  -f|--force: Update all nodes, even if version already correct.
+  -h|--help : Print this help text.
+  -i|--in-place: Delete old machine(s) first, then add new one(s).
+     --image image: Overwrite autodetected image for all nodes. You must also specify the used os.
+  -n|--normal: Add new machine(s) first, then delete old one(s).
+     --os operating_system: Overwrite autodetected os for all nodes.
+  -q|--quiet: Be less verbose
+  -v|--verbose: Be more verbose."
+
+COLOR_YELLOW='\033[0;33m'
+COLOR_RED='\033[0;31m'
+COLOR_RESET='\033[0m'
+
+main() {
+  read_params $@
+  validate_settings
+
+  printf 'Upgrading cluster %s to version %s... Continue? y/N ' "${cluster}" "${version}"
+  read -n1 -s input
+  printf '\n'
+  case "$input" in
+    y|Y) ;;
+    *)
+      log_error "Aborting!"
+      exit 1
+      ;;
+  esac
+
+  for node in $(kubectl get nodes -o name | cut -d'/' -f2); do
+    run kubectl cordon "${node}"
+    upgrade_node "${node}"
+  done
+}
+
+read_params() {
+  while [[ $# -gt 0 ]]; do
+    key="${1}"
+    case ${key} in
+      -f|--force)
+        force='yes'
+        ;;
+      -h|--help)
+        printf '%s\n' "${HELP}"
+        exit 0
+        ;;
+      --image)
+        shift
+        force_image="${1}"
+        ;;
+      -i|--in-place)
+        upgrade_type='inplace'
+        ;;
+      -n|--normal)
+        upgrade_type='normal'
+        ;;
+      --os)
+        shift
+        force_operating_system="$(echo "${1}" | tr '[:upper:]' '[:lower:]')"
+        ;;
+      -q|--quiet)
+        verbose=0
+        ;;
+      -v|--verbose)
+        verbose=2
+        ;;
+      *)
+        printf 'Unknown paramter: %s\n%s\n' "${1}" "${HELP}"
+        exit 1
+        ;;
+    esac
+    shift
+  done
+}
+
+validate_settings() {
+  # OS given, empty image. Use ubuntu default or abort
+  if [ -n "${force_operating_system}" ] && [ -z "${force_image}" ]; then
+    if [ "${force_operating_system}" == "ubuntu" ]; then
+      force_image="Ubuntu 18.04 LTS sys11 optimized - 2018-08-13"
+    else
+      log_error "OS specified, but no image given. Aborting!"
+      exit 1
+    fi
+  fi
+
+  # OS empty, image given. Abort
+  if [ -z "${force_operating_system}" ] && [ -n "${force_image}" ]; then
+    log_error "Image specified, but no OS given. Aborting!"
+    exit 1
+  fi
+}
+
+upgrade_node() {
+  node="$1"
+  machinespec="$(kubectl -n kube-system get machine machine-${node} -o json)"
+
+  if [ "$(jq -rc '.spec.versions.kubelet' <<<${machinespec})" == "${version}" ]; then
+    if [ "${force}" == 'yes' ]; then
+      log_info "Node ${node} already up to date. Rebuilding anyway."
+    else
+      log_info "Node ${node} already up to date. Skipping."
+      run kubectl uncordon "${node}"
+      return
+    fi
+  fi
+
+  # Generate uuid
+  uuid=""
+  while [ -z "$uuid" ]; do
+    uuid="$(gen_uuid)"
+  done
+
+  # select image
+  if [ -n "${force_operating_system}" ] && [ -n "${force_image}" ]; then
+    operating_system="${force_operating_system}"
+    image="${force_image}"
+  else
+    operating_system="$(jq -rc '.spec.providerConfig.value.operatingSystem' <<<${machinespec})"
+    if [ "${operating_system}" == "ubuntu" ]; then
+      image="Ubuntu 18.04 LTS sys11 optimized - 2018-08-13"
+    else
+      image="$(jq -rc '.spec.providerConfig.value.cloudProviderSpec.image' <<<${machinespec})"
+    fi
+  fi
+
+  if [ "${upgrade_type}" == "inplace" ]; then
+    delete_node "${node}"
+  fi
+
+  log_info "Creating node kubermatic-${cluster}-${uuid}."
+  cat <<EOF | run kubectl apply -f -
+---
+apiVersion: cluster.k8s.io/v1alpha1
+kind: Machine
+metadata:
+  name: machine-kubermatic-${cluster}-${uuid}
+  namespace: kube-system
+spec:
+  metadata:
+    name: kubermatic-${cluster}-${uuid}
+  providerConfig:
+    value:
+      cloudProvider: openstack
+      cloudProviderSpec:
+        availabilityZone: $(jq -rc '.spec.providerConfig.value.cloudProviderSpec.availabilityZone' <<<${machinespec})
+        flavor: $(jq -rc '.spec.providerConfig.value.cloudProviderSpec.flavor' <<<${machinespec})
+        floatingIpPool: $(jq -rc '.spec.providerConfig.value.cloudProviderSpec.floatingIpPool' <<<${machinespec})
+        identityEndpoint: $(jq -rc '.spec.providerConfig.value.cloudProviderSpec.identityEndpoint' <<<${machinespec})
+        image: ${image}
+        network: $(jq -rc '.spec.providerConfig.value.cloudProviderSpec.network' <<<${machinespec})
+        region: $(jq -rc '.spec.providerConfig.value.cloudProviderSpec.region' <<<${machinespec})
+        securityGroups: $(jq -rc '.spec.providerConfig.value.cloudProviderSpec.securityGroups' <<<${machinespec})
+      operatingSystem: ${operating_system}
+      operatingSystemSpec:
+        distUpgradeOnBoot: $(jq -rc '.spec.providerConfig.value.operatingSystemSpec.distUpgradeOnBoot' <<<${machinespec})
+      sshPublicKeys: $(jq -rc '.spec.providerConfig.value.sshPublicKeys' <<<${machinespec})
+  roles:
+  - Node
+  versions:
+    kubelet: ${version}
+EOF
+
+  log_info "Waiting for node kubermatic-${cluster}-${uuid} to become ready."
+  while [ "$(kubectl get node kubermatic-${cluster}-${uuid} -o json 2>/dev/null | jq -rc '.status.conditions[] | select(.type == "Ready") | .status')" != "True" ]; do
+    sleep 1
+  done
+
+  if [ ${upgrade_type} != "inplace" ]; then
+    delete_node "${node}"
+  fi
+}
+
+gen_uuid() {
+  uuid="$(cat /dev/urandom | base64 | tr -cd 'a-z0-9' | head -c 5)"
+  kubectl get machine machine-kubermatic-${cluster}-${uuid} >/dev/null 2>&1
+  rc=$?
+  if [ ${rc} -ne 0 ]; then
+    printf '%s' "${uuid}"
+  else
+    printf ''
+  fi
+}
+
+delete_node() {
+  node="${1}"
+  log_info "Draining node ${node}."
+  run kubectl drain --delete-local-data --ignore-daemonsets "${node}"
+  log_info "Deleting node ${node}."
+  run kubectl -n kube-system delete machine "machine-${node}"
+}
+
+run() {
+  case "${verbose}" in
+    0) $@ >/dev/null 2>&1 ;;
+    1) $@ >/dev/null ;;
+    2) $@ ;;
+  esac
+}
+
+log_info() {
+  if [ ${verbose} -ge 1 ]; then
+    printf "${COLOR_YELLOW}[%s]${COLOR_RESET} %s\n" "$(date +'%Y-%m-%d %H:%M:%S')" "$@"
+  fi
+}
+log_error() {
+  printf "${COLOR_YELLOW}[%s] ${COLOR_RED}%s${COLOR_RESET}\n" "$(date +'%Y-%m-%d %H:%M:%S')" "$@"
+}
+
+main $@
