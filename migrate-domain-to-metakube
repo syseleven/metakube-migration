@@ -10,6 +10,9 @@ Parameters:
 Positional:
   kubeconfig: Path to kubeconfig for the cluster you want to migrate."
 
+DOM_OLD='stage.metakube.syseleven.de'
+DOM_NEW='stage.metakube.de'
+
 while [[ $# -gt 0 ]]; do
   key="${1}"
   case ${key} in
@@ -39,7 +42,7 @@ sleep 5
 
 printf 'Upating configmap\n'
 kubectl -n kube-public get configmap cluster-info -o yaml \
-  | sed 's/k8s.01.syseleven.de/metakube.syseleven.de/g' \
+  | sed "s/${DOM_OLD}/${DOM_NEW}/g" \
   | kubectl apply -f - 2>/dev/null
 
 for node_name in $(kubectl get nodes -o jsonpath='{ .items[*].metadata.name }'); do
@@ -48,7 +51,7 @@ for node_name in $(kubectl get nodes -o jsonpath='{ .items[*].metadata.name }');
   ssh ubuntu@${node_ip} \
     -o StrictHostKeyChecking=no \
     -o UserKnownHostsFile=/dev/null \
-     'sudo sed -i "s/k8s.01.syseleven.de/metakube.syseleven.de/g" /etc/kubernetes/kubelet.conf; \
-      sudo systemctl restart kubelet' \
+     "sudo sed -i 's/${DOM_OLD}/${DOM_NEW}/g' /etc/kubernetes/kubelet.conf; \
+      sudo systemctl restart kubelet" \
     2>/dev/null
 done
